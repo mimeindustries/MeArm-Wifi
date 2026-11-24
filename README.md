@@ -1,4 +1,151 @@
-MeArm Arduino
-=============
+MeArm WiFi
+==========
 
-This is a library for controlling the MeArm from an Arduino. It is currently a work in progress pending the release of new hardware and is not currently for use on the existing brains boards. See [this repository](https://github.com/mimeindustries/mearm-brains-arduino) if you are looking for the Arduino code to run on a brains board.
+Firmware library for the **MeArm WiFi** board: an ESP8266 that drives the four MeArm servos and serves a
+browser-based programming environment over its own WiFi network. You connect a phone, tablet or laptop to the
+arm's WiFi, open the page it serves, and control or program the arm from there. No app or install is needed.
+
+It is built on [Marceau](https://github.com/MeArm/marceau-artiemax), which provides the WiFi access point, the
+web server, the WebSocket connection and the JSON command interpreter.
+
+> Looking for the code for the original MeArm Brains board? See
+> [mearm-brains-arduino](https://github.com/mimeindustries/mearm-brains-arduino).
+
+## What it does
+
+- **WiFi access point.** On boot the board creates an open network named `MeArm-XXXX`, where `XXXX` comes from
+  the board's MAC address. A password can be set with
+  `setConfig` (`ap_pass`). The UI is at `http://192.168.4.1/`.
+- **Web UI.** The main page (`index.html`, CSS and JS) is compiled into the firmware from `web.h`. The
+  programming apps are stored in the board's flash filesystem and served under `/a/`:
+  - Blockly (drag-and-drop blocks)
+  - JavaScript
+  - Python
+  - Snap!
+- **Control API.** JSON commands arrive over a WebSocket on port **8899** or over serial at **230400 baud**:
+  - `moveJointsTo`, `moveBaseTo`, `moveLowerTo`, `moveUpperTo`, `moveGripTo`
+  - `openGrip`, `closeGrip`, `getServoState`, `version`, `pause`, `resume`, `stop`
+  - Marceau's built-in commands: `ping`, `uptime`, `freeHeap`, `getConfig`, `setConfig`, `resetConfig`,
+    `startWifiScan`
+
+  Servo moves report back to the client when they finish.
+- **Joystick control.** The two on-board joysticks are read through a PCF8591 ADC (I²C on GPIO0/GPIO2). They
+  move the servos directly, and each move is sent to connected clients as a `servoChange` notification.
+- **Discovery.** When the board is connected to a network as a client, it announces its IP address and name to
+  `local.mearm.com` every 30 seconds.
+- **Over-the-air updates.** The `updateFirmware` and `updateUI` commands download new firmware or a new
+  filesystem image (see the notes below).
+
+### Default servo pins
+
+| Servo | GPIO |
+|-------|------|
+| Base  | 16   |
+| Lower | 12   |
+| Upper | 14   |
+| Grip  | 13   |
+
+Change them with `meArm.setServoPins(base, lower, upper, grip)` before `meArm.begin()`.
+
+## Requirements
+
+- **Arduino IDE 2.x**
+- **ESP8266 board package 3.x**: in Boards Manager, install "esp8266 by ESP8266 Community". Tested with 3.1.2.
+- **Libraries** (install with Library Manager, or use the copies in this repo's `libraries/` folder):
+  - **Marceau** 0.1.0 or later, the version that uses LittleFS on ESP8266
+  - **ESP Async WebServer** by ESP32Async (3.6.0 or later)
+  - **ESP Async TCP** by ESP32Async (2.0.0 or later). This is the ESP8266 TCP library. Don't use the older
+    `me-no-dev` version.
+  - **Async TCP** by ESP32Async. Marceau lists it as a dependency; it is only used on ESP32.
+
+## Setup
+
+### 1. Build and upload the firmware
+
+1. Open the example: **File → Examples → MeArm → MeArm-WiFi**. Then **File → Save As** to a normal sketch
+   folder, so the sketch has its `data` folder next to it.
+2. Select your ESP8266 board and port.
+3. Set **Tools → Flash Size** to a layout with a filesystem partition big enough for the apps (about 860 KB),
+   e.g. `4MB (FS:2MB OTA:~1019KB)`.
+4. Upload as normal.
+
+### 2. Upload the app files to the filesystem (LittleFS)
+
+The Blockly, JavaScript, Python and Snap! apps live in the sketch's `data` folder. They go onto the board's
+flash in a separate upload. Without this step the UI still loads, but no apps appear and `/a/apps.json`
+returns 404.
+
+1. Install the LittleFS upload plugin (one time only):
+   - Download the `.vsix` from
+     [arduino-littlefs-upload releases](https://github.com/earlephilhower/arduino-littlefs-upload/releases).
+   - Put it in `C:\Users\<you>\.arduinoIDE\plugins\` (on Mac or Linux, `~/.arduinoIDE/plugins/`). Create the
+     folder if it doesn't exist.
+   - Restart the IDE.
+2. Close the Serial Monitor, because it holds the port.
+3. Press **Ctrl+Shift+P** (Cmd+Shift+P on Mac) and run **"Upload LittleFS to Pico/ESP8266/ESP32"**.
+
+Use the **same Flash Size setting** for the sketch and the filesystem upload, or the filesystem won't mount.
+You only need to repeat this step when the files in `data/` change.
+
+### 3. Check it
+
+Open the Serial Monitor at 230400 baud and reset the board. Marceau prints:
+
+```
+[[[File system info]]]
+Mounted:          yes
+Total space:      ... bytes
+Total space used: ... bytes
+```
+
+`Mounted: NO` or a used size near 0 means the data upload is missing, or was made with a different Flash Size.
+Join the `MeArm-XXXX` network and open `http://192.168.4.1/`. The apps should be listed, and
+`http://192.168.4.1/a/apps.json` should load.
+
+## Updates and fixes (2026)
+
+These changes bring the library up to date with ESP8266 core 3.x and the current Marceau.
+
+### Marceau
+
+- **Switched to the ESP32Async libraries.** The web server and TCP code now come from ESP32Async's
+  ESP Async WebServer, ESP Async TCP and Async TCP, instead of the bundled `me-no-dev` copies.
+- **ESP8266 build.** It needs the **ESP Async TCP** library. Without it the build fails with
+  `ESPAsyncTCP.h: No such file or directory`.
+- **LittleFS on ESP8266.** Marceau used to mount SPIFFS. The IDE 2.x upload plugin only builds LittleFS images,
+  and SPIFFS is deprecated in core 3.x, so the apps were never found. It now mounts LittleFS with auto-format
+  turned off, so a failed mount can't erase the flash. The serial log reports whether the mount succeeded.
+  ESP32 builds still use SPIFFS.
+
+### MeArm-Wifi-Lib
+
+- **Discovery rewritten.** The old discovery code used `espconn.h` from the legacy ESP8266 SDK. It clashes with
+  lwIP2 in core 3.x (`conflicting declaration 'typedef void (* dns_found_callback)…'`). Discovery now uses
+  ESPAsyncTCP's `AsyncClient` and stays non-blocking. It skips a send while the previous one is still running,
+  and drops a request that has been stuck for 20 seconds.
+- **OTA calls updated for core 3.x.** `ESPhttpUpdate.update(url)` and `updateSpiffs(url)` were removed from the
+  core. The library now calls `update(client, url)` and `updateFS(client, url)`, and the update files moved to
+  `downloads.mearm.com/MeArm/WiFi/v2/`.
+- **Header guard fixed.** `__MeArm-Marceau_h__` isn't a valid macro name because of the hyphen. It is now
+  `__MeArm_Marceau_h__`.
+- **PCF8591 warning fixed.** `Wire.requestFrom()` was ambiguous on core 3.x. The arguments are now cast to
+  `uint8_t`.
+
+## Known issues
+
+- **The arm only runs its own access point.** Joining an existing WiFi network is currently commented out in
+  Marceau's `MarceauWifi::setupWifi()`, so discovery via `local.mearm.com` doesn't run.
+- **Over-the-air update files.** `updateFirmware` and `updateUI` now fetch
+  `http://downloads.mearm.com/MeArm/WiFi/v2/firmware-latest.bin` and `.../v2/ui-latest.bin`. Build
+  `ui-latest.bin` as a **LittleFS** image, not SPIFFS, or the board won't be able to read the filesystem after
+  an update:
+
+  ```bash
+  mklittlefs -c data -p 256 -b 8192 -s 2072576 ui-latest.bin
+  ```
+
+  `2072576` is the FS size for the 4MB / FS:2MB layout. `mklittlefs` comes with the ESP8266 core under
+  `Arduino15/packages/esp8266/tools/mklittlefs/`. The plugin's output panel shows the exact command and sizes it
+  used. The firmware file is the `.bin` from **Sketch → Export Compiled Binary**.
+- **Duplicate `Servo.h` warning.** "Multiple libraries were found for Servo.h" is harmless. The ESP8266 core's
+  Servo library is the correct one.
