@@ -10,7 +10,7 @@ void PCF8591::readSensors(unsigned char * values){
   Wire.beginTransmission(address); // wake up PCF8591
   Wire.write(0x44); // control byte - read ADC0 and increment counter
   Wire.endTransmission();
-  Wire.requestFrom(address, 5);
+  Wire.requestFrom((uint8_t)address, (uint8_t)5);
   Wire.read(); // Padding bytes to allow conversion to complete
   values[0] = Wire.read();
   values[1] = Wire.read();
