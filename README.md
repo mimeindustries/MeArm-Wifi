@@ -23,8 +23,8 @@ web server, the WebSocket connection and the JSON command interpreter.
   - Python
   - Snap!
 - **Control API.** JSON commands arrive over a WebSocket on port **8899** or over serial at **230400 baud**:
-  - `moveJointsTo`, `moveBaseTo`, `moveLowerTo`, `moveUpperTo`, `moveGripTo`
-  - `openGrip`, `closeGrip`, `getServoState`, `version`, `pause`, `resume`, `stop`
+  - `moveJointsTo`, `moveBaseTo`, `moveRightTo`, `moveLeftTo`, `moveGripTo`
+  - `openGrip`, `closeGrip`, `getServoState`, `version`, `pause`, `resume`, `stop`, `setLimits`, `getLimits`, `resetLimits`
   - Marceau's built-in commands: `ping`, `uptime`, `freeHeap`, `getConfig`, `setConfig`, `resetConfig`,
     `startWifiScan`
 
@@ -41,15 +41,98 @@ web server, the WebSocket connection and the JSON command interpreter.
 | Servo | GPIO |
 |-------|------|
 | Base  | 16   |
-| Lower | 12   |
-| Upper | 14   |
+| Right | 12   |
+| Left  | 14   |
 | Grip  | 13   |
 
-Change them with `meArm.setServoPins(base, lower, upper, grip)` before `meArm.begin()`.
+Change them with `meArm.setServoPins(base, right, left, grip)` before `meArm.begin()`.
+
+### Servo calibration
+
+Angles from 0° to 180° map onto pulse widths of **500–2500 µs**, about 11 µs per degree, centred on 1500 µs.
+This is the usual full range for the SG90/MG90S-type servos on the MeArm. Servos vary, so:
+
+- **A joint falls short of where it should go:** widen its range, e.g. to 450–2550 µs.
+- **A joint buzzes or strains at the end of its travel:** narrow its range, e.g. to 600–2400 µs.
+
+Set the range per servo after `meArm.begin()`:
+
+```cpp
+meArm.begin();
+meArm.grip.setPulseRange(600, 2400);
+```
+
+Or change the default for every servo by defining `MEARM_SERVO_MIN_US` / `MEARM_SERVO_MAX_US` in
+`lib/MeArmServo.h`.
+
+### Joint limits
+
+Each joint has a range it won't move past. Moves, `moveJointsTo` and the joysticks are all clamped to it.
+The limits use the same angles as the move commands.
+
+**Hard limits and offsets are set in `setupServos()`** in `src/MeArm-Marceau.cpp`, with
+`begin(pin, min, max, offset)`:
+
+- **`min`, `max`:** servo angles (0–180°, i.e. 500–2500 µs) the joint may never go beyond. Limits set any other
+  way can only narrow the joint within them. They're also the defaults that `resetLimits` and the UI's Defaults
+  button go back to.
+- **`offset`:** the servo angle the joint calls 0°. Commands use angles relative to it: commanded angle = servo
+  angle − offset. With `base.begin(basePin, 0, 180, 90)`, servo angles 0–180° are commanded as −90° to 90°.
+- **Reversed joints:** call `setReversed(true)` before `begin()` to make a joint's commanded angles run the other
+  way: commanded angle = offset − servo angle. The Right joint uses this, so that servo 180° (the arm parallel
+  to the ground) is 0° and servo 30° is 150°:
+
+  ```cpp
+  right.setReversed(true);
+  right.begin(rightPin, 30, 180, 180);   // commanded 0° to 150°
+  ```
+
+- **To choose an offset,** move the joint to the position you want to call 0° (e.g. with the UI's sliders),
+  add the joint's current offset to the angle shown, and use that as the new offset.
+- **Changing an offset changes what every saved program does,** because the same commanded angle now means a
+  different servo angle. Limits saved on the arm are stored in commanded angles too, so press Defaults (or send
+  `resetLimits`) after changing offsets or hard limits.
+
+**From a client,** use `setLimits`. Any joint, and either end, can be left out to keep its current value. The
+reply lists all the limits now in force. `getLimits` returns them without changing anything. Both replies
+also give each joint's `travelMin` / `travelMax`: its hard limits from `setupServos()`, in commanded angles,
+which is how far a limit can be set. Add `"save":false` to `setLimits` to try limits out without saving them.
+
+```json
+{"cmd":"setLimits", "arg":{"base":{"min":-80, "max":80}, "grip":{"max":70}}}
+```
+
+**From a sketch,** call `meArm.base.setLimits(-80, 80)`. It works before or after `meArm.begin()`. Read the limits
+back with `getMinAngle()` / `getMaxAngle()`.
+
+- If a joint is outside its new limits, it eases back inside them.
+- A reversed pair is swapped, and values beyond the hard limits are cut back to them.
+- **Saved across restarts.** `setLimits` saves the limits to EEPROM, and they're loaded again at boot.
+  `resetLimits` puts back the hard limits from `setupServos()` and saves those. Saved limits are cut back to
+  the hard limits when they're loaded, so a narrower `setupServos()` range always wins.
+- **From a sketch,** `setLimits()` doesn't save on its own: call `meArm.saveLimits()` afterwards to keep the
+  change. Saved limits are loaded inside `meArm.begin()`, so they replace any limits set before it. Limits set
+  after `begin()` override the saved ones until the next restart.
+- **Where they're stored:** Marceau's device settings area in EEPROM, after Marceau's own settings. Resetting
+  Marceau's config (`resetConfig`) doesn't clear them.
+- **`openGrip` / `closeGrip`** move the grip to its current minimum / maximum limit, so they follow the grip's
+  limits.
+- **In the UI,** the joint sliders use the current limits, and the Adjust limits panel lets you drag each end
+  within the hard limits.
+
+### Servo idle timeout
+
+A servo that hasn't moved for **5 seconds** stops receiving pulses (it is detached), so it stops buzzing and
+drawing current. The next move starts the pulses again: at the position the servo was holding, then on to the
+new one. While a servo is timed out, nothing holds it, so a joint carrying load may sag a little.
+
+- **Change it per servo:** `meArm.left.setIdleTimeout(10000);`
+- **Turn it off:** `setIdleTimeout(0)`
+- **Change the default for every servo:** define `MEARM_SERVO_IDLE_TIMEOUT_MS` in `lib/MeArmServo.h`.
 
 ### Smooth moves
 
-The move commands (`moveBaseTo`, `moveLowerTo`, `moveUpperTo`, `moveGripTo`, `openGrip`, `closeGrip` and
+The move commands (`moveBaseTo`, `moveRightTo`, `moveLeftTo`, `moveGripTo`, `openGrip`, `closeGrip` and
 `moveJointsTo`) don't jump straight to the new angle. They move from the current position along an **S-curve**
 (quintic "smootherstep"): speed starts at zero, peaks halfway, and drops back to zero at the target, so the arm
 starts and stops without a jerk. A move given while another is running starts from wherever the arm is at that
@@ -61,7 +144,7 @@ moment. The command reports complete when the move finishes.
 - **`moveJointsTo`** moves several joints together, and they all arrive at the same time:
 
   ```json
-  {"cmd":"moveJointsTo", "arg":{"base":90, "lower":45, "upper":60, "grip":0, "duration":1000}}
+  {"cmd":"moveJointsTo", "arg":{"base":90, "right":45, "left":60, "grip":0, "duration":1000}}
   ```
 
   Every key is optional. Joints you leave out stay where they are. Without `duration`, the joint with the
@@ -69,7 +152,7 @@ moment. The command reports complete when the move finishes.
 - **`stop`** halts a smooth move where it is.
 - **Joysticks** still move the servos directly. Using them cancels any smooth move that's running.
 - **From a sketch,** call `meArm.base.smoothMoveTo(angle, durationMs)` or
-  `meArm.smoothMoveJointsTo(base, lower, upper, grip, durationMs)`. Use `NAN` for a joint you don't want to
+  `meArm.smoothMoveJointsTo(base, right, left, grip, durationMs)`. Use `NAN` for a joint you don't want to
   move, and `0` for an automatic duration. `moveToAngle()` still jumps straight to the angle. `meArm.loop()`
   must run often, because it steps the moves.
 
@@ -78,7 +161,8 @@ moment. The command reports complete when the move finishes.
 - **Arduino IDE 2.x**
 - **ESP8266 board package 3.x**: in Boards Manager, install "esp8266 by ESP8266 Community". Tested with 3.1.2.
 - **Libraries** (install with Library Manager, or use the copies in this repo's `libraries/` folder):
-  - **Marceau** 0.1.0 or later, the version that uses LittleFS on ESP8266
+  - **Marceau** 0.1.0 or later, with LittleFS on ESP8266 and the device settings area
+    (`reserveDeviceSettings()`), which stores the joint limits
   - **ESP Async WebServer** by ESP32Async (3.6.0 or later)
   - **ESP Async TCP** by ESP32Async (2.0.0 or later). This is the ESP8266 TCP library. Don't use the older
     `me-no-dev` version.
@@ -196,12 +280,22 @@ These changes bring the library up to date with ESP8266 core 3.x and the current
   `downloads.mearm.com/MeArm/WiFi/v2/`.
 - **Header guard fixed.** `__MeArm-Marceau_h__` isn't a valid macro name because of the hyphen. It is now
   `__MeArm_Marceau_h__`.
+- **Joints renamed: upper → left, lower → right.** The commands are `moveLeftTo` / `moveRightTo` (were `moveUpperTo` / `moveLowerTo`). The
+  JSON keys in `moveJointsTo`, `getServoState` and `servoChange` are `left` / `right`, and in a sketch
+  they are `meArm.left` / `meArm.right`. The old names are gone, so the UI must be built from a matching
+  [mime-app-libs](https://github.com/mimeindustries/mime-app-libs).
 - **Smooth S-curve moves.** The move commands now ease in and out instead of jumping (see
   [Smooth moves](#smooth-moves)). `moveJointsTo` was an empty stub; it now moves several joints at once.
   `stop` now halts motion.
 - **Servo range restored on core 3.x.** Core 3.x changed `Servo::attach(pin)` to map 0–180° onto
-  1000–2000 µs, where core 2.x used 544–2400 µs. That cut the arm's travel. The servos are now attached
-  with 544–2400 µs, and positions are written in microseconds for finer steps.
+  1000–2000 µs, where core 2.x used 544–2400 µs. That cut the arm's travel to about 110°. The servos are now
+  attached with 500–2500 µs, the usual full range for SG90/MG90S-type servos, and positions are written in
+  microseconds for finer steps.
+- **Servo idle timeout.** Servos stop being driven after 5 seconds without a move, and start again on the
+  next one (see [Servo idle timeout](#servo-idle-timeout)).
+- **Settable joint limits.** Set them with `setLimits` / `getLimits` or `setLimits()` in a sketch (see
+  [Joint limits](#joint-limits)). They're saved in EEPROM, and `resetLimits` restores the defaults.
+  Marceau's command table was raised to 17 to make room.
 - **PCF8591 warning fixed.** `Wire.requestFrom()` was ambiguous on core 3.x. The arguments are now cast to
   `uint8_t`.
 
