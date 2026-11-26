@@ -47,6 +47,32 @@ web server, the WebSocket connection and the JSON command interpreter.
 
 Change them with `meArm.setServoPins(base, lower, upper, grip)` before `meArm.begin()`.
 
+### Smooth moves
+
+The move commands (`moveBaseTo`, `moveLowerTo`, `moveUpperTo`, `moveGripTo`, `openGrip`, `closeGrip` and
+`moveJointsTo`) don't jump straight to the new angle. They move from the current position along an **S-curve**
+(quintic "smootherstep"): speed starts at zero, peaks halfway, and drops back to zero at the target, so the arm
+starts and stops without a jerk. A move given while another is running starts from wherever the arm is at that
+moment. The command reports complete when the move finishes.
+
+- **Speed.** With no duration given, a move takes 8 ms per degree (`MEARM_SMOOTH_MS_PER_DEGREE` in
+  `lib/MeArmServo.h`), and at least 150 ms. Peak speed is about 1.9 times the average. Change it per servo
+  with `meArm.base.setSpeed(msPerDegree)`.
+- **`moveJointsTo`** moves several joints together, and they all arrive at the same time:
+
+  ```json
+  {"cmd":"moveJointsTo", "arg":{"base":90, "lower":45, "upper":60, "grip":0, "duration":1000}}
+  ```
+
+  Every key is optional. Joints you leave out stay where they are. Without `duration`, the joint with the
+  furthest to go sets the time.
+- **`stop`** halts a smooth move where it is.
+- **Joysticks** still move the servos directly. Using them cancels any smooth move that's running.
+- **From a sketch,** call `meArm.base.smoothMoveTo(angle, durationMs)` or
+  `meArm.smoothMoveJointsTo(base, lower, upper, grip, durationMs)`. Use `NAN` for a joint you don't want to
+  move, and `0` for an automatic duration. `moveToAngle()` still jumps straight to the angle. `meArm.loop()`
+  must run often, because it steps the moves.
+
 ## Requirements
 
 - **Arduino IDE 2.x**
@@ -102,6 +128,48 @@ Total space used: ... bytes
 Join the `MeArm-XXXX` network and open `http://192.168.4.1/`. The apps should be listed, and
 `http://192.168.4.1/a/apps.json` should load.
 
+## Building the UI files
+
+The example sketch already contains a built UI, so you only need this when you change the UI. The UI is
+built from [mime-app-libs](https://github.com/mimeindustries/mime-app-libs), which needs
+[Node.js](https://nodejs.org/) and npm.
+
+```bash
+git clone https://github.com/mimeindustries/mime-app-libs
+```
+
+```bash
+cd mime-app-libs
+```
+
+```bash
+npm install
+```
+
+```bash
+npm run build:mearm-wifi
+```
+
+The output goes to `dist/mearm-wifi/`:
+
+- **`web.h`** holds the main page, favicon, `base.css/js` and the built-in UI as gzipped PROGMEM arrays.
+  Copy it over the sketch's `web.h`. It is compiled into the firmware, so rebuild and upload the sketch.
+- **`data/`** holds the apps (Blockly, JavaScript, Python, Snap!), the code editor, `apps.json` and media.
+  Copy it over the sketch's `data/` folder, then upload it again with the LittleFS plugin (step 2 above).
+
+You can also write straight into the sketch folder. Existing files are overwritten and other files are left
+alone:
+
+```bash
+npm run build:mearm-wifi -- --out <path-to>/MeArm-WiFi
+```
+
+The MeArm-specific parts (`index.html`, `apps.json`, and each app's start-up code) are in `src/mearm-wifi/`
+in mime-app-libs. Which source files go into each output file is set at the top of `tools/build-ui.js`.
+
+For an over-the-air UI update, build `ui-latest.bin` from the new `data/` folder with `mklittlefs` (see
+[Known issues](#known-issues)).
+
 ## Updates and fixes (2026)
 
 These changes bring the library up to date with ESP8266 core 3.x and the current Marceau.
@@ -128,6 +196,12 @@ These changes bring the library up to date with ESP8266 core 3.x and the current
   `downloads.mearm.com/MeArm/WiFi/v2/`.
 - **Header guard fixed.** `__MeArm-Marceau_h__` isn't a valid macro name because of the hyphen. It is now
   `__MeArm_Marceau_h__`.
+- **Smooth S-curve moves.** The move commands now ease in and out instead of jumping (see
+  [Smooth moves](#smooth-moves)). `moveJointsTo` was an empty stub; it now moves several joints at once.
+  `stop` now halts motion.
+- **Servo range restored on core 3.x.** Core 3.x changed `Servo::attach(pin)` to map 0–180° onto
+  1000–2000 µs, where core 2.x used 544–2400 µs. That cut the arm's travel. The servos are now attached
+  with 544–2400 µs, and positions are written in microseconds for finer steps.
 - **PCF8591 warning fixed.** `Wire.requestFrom()` was ambiguous on core 3.x. The arguments are now cast to
   `uint8_t`.
 

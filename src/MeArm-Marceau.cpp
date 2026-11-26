@@ -20,7 +20,7 @@ MeArm::MeArm(){
   marcel.addCmd("version",          _version,          true);
   marcel.addCmd("pause",            _empty,            true);
   marcel.addCmd("resume",           _empty,            true);
-  marcel.addCmd("stop",             _empty,            true);
+  marcel.addCmd("stop",             _stop,             true);
 #ifdef ESP8266
   marcel.addCmd("updateFirmware",   _updateFirmware,   true);
   marcel.addCmd("updateUI",         _updateUI,         true);
@@ -51,6 +51,10 @@ void MeArm::begin(){
 
 void MeArm::loop(){
   marcel.loop();
+  base.update();
+  lower.update();
+  upper.update();
+  grip.update();
   joystickControl();
   sendDiscovery();
   checkDone();
@@ -128,6 +132,29 @@ void MeArm::setServoPins(uint8_t _basePin, uint8_t _lowerPin, uint8_t _upperPin,
   gripPin = _gripPin;
 }
 
+// Smooth move several joints at once. All joints finish together: the
+// duration is set by the joint with the furthest to go (or durationMs if
+// given). Pass NAN for a joint to leave it where it is.
+void MeArm::smoothMoveJointsTo(float baseAngle, float lowerAngle, float upperAngle, float gripAngle, unsigned long durationMs){
+  if(durationMs == 0){
+    if(!isnan(baseAngle))  durationMs = max(durationMs, base.smoothDuration(baseAngle));
+    if(!isnan(lowerAngle)) durationMs = max(durationMs, lower.smoothDuration(lowerAngle));
+    if(!isnan(upperAngle)) durationMs = max(durationMs, upper.smoothDuration(upperAngle));
+    if(!isnan(gripAngle))  durationMs = max(durationMs, grip.smoothDuration(gripAngle));
+  }
+  if(!isnan(baseAngle))  base.smoothMoveTo(baseAngle, durationMs);
+  if(!isnan(lowerAngle)) lower.smoothMoveTo(lowerAngle, durationMs);
+  if(!isnan(upperAngle)) upper.smoothMoveTo(upperAngle, durationMs);
+  if(!isnan(gripAngle))  grip.smoothMoveTo(gripAngle, durationMs);
+}
+
+void MeArm::stop(){
+  base.stop();
+  lower.stop();
+  upper.stop();
+  grip.stop();
+}
+
 void MeArm::setupServos(){
   base.begin(basePin, 0, 180, 90);
   lower.begin(lowerPin, 0, 90, 0);
@@ -176,31 +203,44 @@ void MeArm::updateHandler(){
 }
 #endif //ESP8266
 
+// arg: {"base":90, "lower":45, "upper":60, "grip":0, "duration":1000}
+// Every key is optional; joints that are left out don't move. Without
+// "duration" the time comes from the joint with the furthest to travel.
+static float _jointArg(ArduinoJson::JsonObject &arg, const char *key){
+  return arg.containsKey(key) ? arg[key].as<float>() : NAN;
+}
+
 static void _moveJointsTo(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
+  if(!input["arg"].is<ArduinoJson::JsonObject&>()) return;
+  ArduinoJson::JsonObject &arg = input["arg"].asObject();
+  unsigned long duration = arg.containsKey("duration") ? arg["duration"].as<unsigned long>() : 0;
+  MeArm::mainInstance->smoothMoveJointsTo(
+    _jointArg(arg, "base"), _jointArg(arg, "lower"),
+    _jointArg(arg, "upper"), _jointArg(arg, "grip"), duration);
 }
 
 static void _openGrip(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
-  MeArm::mainInstance->grip.moveToAngle(0);
+  MeArm::mainInstance->grip.smoothMoveTo(0);
 }
 
 static void _closeGrip(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
-  MeArm::mainInstance->grip.moveToAngle(90);
+  MeArm::mainInstance->grip.smoothMoveTo(90);
 }
 
 static void _moveBaseTo(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
-  MeArm::mainInstance->base.moveToAngle(atoi(input["arg"].asString()));
+  MeArm::mainInstance->base.smoothMoveTo(atoi(input["arg"].asString()));
 }
 
 static void _moveLowerTo(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
-  MeArm::mainInstance->lower.moveToAngle(atoi(input["arg"].asString()));
+  MeArm::mainInstance->lower.smoothMoveTo(atoi(input["arg"].asString()));
 }
 
 static void _moveUpperTo(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
-  MeArm::mainInstance->upper.moveToAngle(atoi(input["arg"].asString()));
+  MeArm::mainInstance->upper.smoothMoveTo(atoi(input["arg"].asString()));
 }
 
 static void _moveGripTo(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
-  MeArm::mainInstance->grip.moveToAngle(atoi(input["arg"].asString()));
+  MeArm::mainInstance->grip.smoothMoveTo(atoi(input["arg"].asString()));
 }
 
 static void _getServoState(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
@@ -212,6 +252,10 @@ static void _version(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &ou
 }
 
 static void _empty(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
+}
+
+static void _stop(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output){
+  MeArm::mainInstance->stop();
 }
 
 #ifdef ESP8266

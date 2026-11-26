@@ -36,6 +36,7 @@ static void _moveGripTo(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject 
 static void _getServoState(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output);
 static void _version(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output);
 static void _empty(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output);
+static void _stop(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output);
 
 #ifdef ESP8266
 static void _updateFirmware(ArduinoJson::JsonObject &inJson, ArduinoJson::JsonObject &outJson);
@@ -55,6 +56,8 @@ class MeArm {
     MeArmServo grip;
     void getServoState(ArduinoJson::JsonObject &input, ArduinoJson::JsonObject &output);
     static MeArm * mainInstance;
+    void smoothMoveJointsTo(float base, float lower, float upper, float grip, unsigned long durationMs = 0);
+    void stop();
     void updateFirmware();
     void updateHandler();
     void updateUI();
